@@ -138,6 +138,7 @@
             <button id="process-btn" disabled>Process Addresses</button>
             <button id="pause-btn" disabled>Pause</button>
             <button id="download-btn" disabled>Download Results</button>
+            <button id="start-over">Start Over</button>
         </div>
         
         <div id="progress-container">
@@ -225,6 +226,7 @@
         const failedBody = document.getElementById('failed-body');
         const tabs = document.querySelectorAll('.tab');
         const tabContents = document.querySelectorAll('.tab-content');
+        const startOverBtn = document.getElementById('start-over');
         
         // Tab functionality
         tabs.forEach(tab => {
@@ -241,6 +243,10 @@
         function checkEnableProcess() {
             processBtn.disabled = !(fileInput.files.length > 0 && mapboxTokenInput.value.trim() !== '');
         }
+
+        startOverBtn.addEventListener('click', function() {
+            window.location.reload();
+        });
         
         fileInput.addEventListener('change', function(e) {
             if (e.target.files.length > 0) {
@@ -303,7 +309,7 @@
 
         // Global variables for rate limiting and error handling
         let failedRequests = []; // Stores addresses that failed due to rate limiting
-        const MAX_RETRIES = 1; // Maximum number of retry attempts
+        const MAX_RETRIES = 3; // Maximum number of retry attempts
         let retryCount = 0; // Current retry count
 
         function handleRateLimitError() {
@@ -317,7 +323,7 @@
             // Update summary to inform user
             summaryDiv.innerHTML = `
                 <p>Processing paused!</p>
-                <p>The API rate limit has been hit. Waiting 60 seconds before resuming...</p>
+                <p>The API rate limit has been hit. Waiting ${RATE_LIMIT_WINDOW / 1000} seconds before resuming...</p>
             `;
     
             // Resume processing after the pause
@@ -336,11 +342,11 @@
             const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(addresses.join(';'))}.json?access_token=${mapboxToken}&limit=1`;
     
             try {
-                //const response = await fetch(url); 
-                const response2 = await fetch(url);
-const response1 = new Response(null, { status: 429, statusText: "Too Many Requests" });
+                const response = await fetch(url); 
+                /*const response2 = await fetch(url);
+                const response1 = new Response(null, { status: 429, statusText: "Too Many Requests" });
 
-const response = Math.random() < 0.2 ? response1 : response2;         
+                const response = Math.random() < 0.2 ? response1 : response2;      */   
                 if (response.status === 429) {
                     handleRateLimitError();
                     return addresses.map(address => ({
@@ -406,6 +412,9 @@ const response = Math.random() < 0.2 ? response1 : response2;
             const progress = Math.round((currentIndex / addressData.length) * 100);
             progressBar.style.width = `${progress}%`;
             progressText.textContent = `${progress}%`;
+            if (currentIndex > addressData.length) {
+                currentIndex = addressData.length;
+            }
             processedCount.textContent = currentIndex;
             totalCount.textContent = addressData.length;
 
@@ -453,6 +462,10 @@ const response = Math.random() < 0.2 ? response1 : response2;
                 etaElem.textContent = etaText;
             }
         }
+
+        function generateRowId(entry) {
+            return `row-${entry.LINE1}-${entry.ZIP}`.replace(/\s+/g, '-').toLowerCase();
+        }
         
         // Add entry to sample results table
         function addToSampleTable(entry) {
@@ -460,6 +473,7 @@ const response = Math.random() < 0.2 ? response1 : response2;
             if (sampleBody.children.length >= 100) return;
             
             const row = document.createElement('tr');
+            row.setAttribute('data-id', generateRowId(entry));
             row.innerHTML = `
                 <td>${entry.LINE1 || ''}${entry.LINE2 ? '<br>' + entry.LINE2 : ''}</td>
                 <td>${entry.CITY || ''}</td>
@@ -475,6 +489,7 @@ const response = Math.random() < 0.2 ? response1 : response2;
         // Add entry to failed results table
         function addToFailedTable(entry) {
             const row = document.createElement('tr');
+            row.setAttribute('data-id', generateRowId(entry)); // Assign unique ID
             row.innerHTML = `
                 <td>${entry.LINE1 || ''}${entry.LINE2 ? '<br>' + entry.LINE2 : ''}</td>
                 <td>${entry.CITY || ''}</td>
@@ -484,10 +499,28 @@ const response = Math.random() < 0.2 ? response1 : response2;
             `;
             failedBody.appendChild(row);
         }
+
+        function removeFromSampleTable(entry) {
+            const rowId = generateRowId(entry);
+            const row = document.querySelector(`#sample-body tr[data-id="${rowId}"]`);
+            if (row) {
+                row.remove();
+            }
+        }
+
+        function removeFromFailedTable(entry) {
+            //console.log('Removing from failed table:', entry);
+            const rowId = generateRowId(entry);
+            const row = document.querySelector(`#failed-body tr[data-id="${rowId}"]`);
+            if (row || !entry.hasOwnProperty('LINE2')) {
+                row.remove();
+            }
+        }
+
         
         // Global variables for rate limiting
         let requestTimestamps = []; // Stores timestamps of recent requests
-        const RATE_LIMIT_WINDOW = 60000; // 60 seconds in milliseconds
+        const RATE_LIMIT_WINDOW = 45000; // seconds in milliseconds
         let maxWorkers = 2; // Further reduced number of concurrent workers
 
     // Process the next batch of addresses
@@ -529,16 +562,21 @@ const response = Math.random() < 0.2 ? response1 : response2;
         // Update processed data and UI
         results.forEach(result => {
             processedData.push(result);
-            console.log('Processed:', result);
             
             if (result.Status === 'Success') {
-                successData.push(result);
+                if (result.hasOwnProperty('LINE2'))
+                    successData.push(result);
                 successCount++;
                 addToSampleTable(result);
+                if (retryCount > 0 && result.hasOwnProperty('LINE2'))
+                    removeFromFailedTable(result);
             } else {
-                failedData.push(result);
+                if (result.hasOwnProperty('LINE2'))
+                    failedData.push(result);
                 failureCount++;
                 addToFailedTable(result);
+                if (retryCount > 0 && result.hasOwnProperty('LINE2'))
+                    removeFromFailedTable(result);
             }
         });
         
@@ -577,11 +615,12 @@ const response = Math.random() < 0.2 ? response1 : response2;
             launchWorkers();
         }
         else {
+            pauseBtn.disabled = true;
+            downloadBtn.disabled = false;
             progressBar.style.width = '100%';
             progressText.textContent = '100%';
             etaElem.textContent = 'Done!';
-            pauseBtn.disabled = true;
-            downloadBtn.disabled = false;
+            
             document.getElementById('success-details').style.display = 'none';
             document.getElementById('retry').style.display = 'none';
             
